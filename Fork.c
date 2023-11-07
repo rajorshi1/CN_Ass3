@@ -1,15 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdint.h>
 #include <unistd.h>
-#include <sys/socket.h>
-#include <errno.h>
-#include <stdbool.h>
-#include <netinet/in.h>
-#include <signal.h>
-
-#define MAX 5000
+#include <arpa/inet.h>
 
 uint64_t fact(int n) {
     if (n <= 1) {
@@ -19,57 +12,60 @@ uint64_t fact(int n) {
     }
 }
 
-void handle_client(int client_socket) {
-    uint64_t n;
-    read(client_socket, &n, sizeof(uint64_t));
-    if (n > 20) {
-        n = 20;
-    }
-    uint64_t result = fact(n);
-    write(client_socket, &result, sizeof(uint64_t));
-    close(client_socket);
-}
-
-int main(int argc, char *argv[]) {
-    int requests = argv[1];
+int main() {
     int server_socket, client_socket;
+    struct sockaddr_in server_addr, client_addr;
+    socklen_t client_len = sizeof(client_addr);
+
+    // Create socket
     server_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (server_socket == -1) {
         perror("Error creating socket");
         exit(EXIT_FAILURE);
     }
-    struct sockaddr_in server,client;
-    socklen_t client_len = sizeof(client);
-    server.sin_family=AF_INET;
-    server.sin_port=htons(9000);
-    server.sin_addr.s_addr=INADDR_ANY;
 
-    if (!bind(server_socket,(struct sockaddr*)&server, sizeof(struct sockaddr_in)));
-    else perror("Bind failed");
-    if (!listen(server_socket,MAX));
-    else perror("Listen failed");
 
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(9999);
+    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    // Bind socket
+    if (bind(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
+        perror("Error binding");
+        close(server_socket);
+        exit(EXIT_FAILURE);
+    }
+
+    // Listen for incoming connections
+    if (listen(server_socket, 6000) == -1) {
+        perror("Error listening");
+        close(server_socket);
+        exit(EXIT_FAILURE);
+    }
+    printf("Server Listening\n");
     while (1) {
-        int client_socket = accept(server_socket, (struct sockaddr *)&client, &client_len);
-        if (client_socket < 0) {
+        // Accept incoming connection
+        client_socket = accept(server_socket, (struct sockaddr *)&client_addr, &client_len);
+        if (client_socket == -1) {
             perror("Error accepting connection");
             close(server_socket);
             exit(EXIT_FAILURE);
         }
-        if (!fork()) {
-            for(int i=0;i<requests;i++){
-                uint64_t n;
-                read(client_socket, &n, sizeof(uint64_t));
-                if (n > 20) {
-                    n = 20;
-                }
-                uint64_t result = fact(n);
-                write(client_socket, &result, sizeof(uint64_t));
-                close(client_socket);
-                kill(getpid(),SIGKILL);
-            }
+
+        // Fork a new process to handle the client
+        if (fork() == 0) {
+            char buffer[1024];
+    	    while (1) {
+		int n = read(client_socket, buffer, sizeof(buffer));
+		buffer[n] = '\0';
+		int num  = atoi(buffer);
+		if (num > 20) num = 20;
+		uint64_t result = fact(num);
+		char response[1024];
+		snprintf(response, sizeof(response), "Answer: %ld\n", result);
+		write(client_socket, &response, sizeof(response));
+    		}
         }
-        else perror("Fork failed");
     }
-    close(server_socket);
+    return 0;
 }
