@@ -1,89 +1,125 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <arpa/inet.h>
-#include <pthread.h>
+#include <unistd.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <sys/time.h>
 
+#define MAX_CLIENTS 4000
+#define PORT 9999
+
+// Function to compute factorial
 uint64_t fact(int n) {
-    if (n <= 1) {
-        return 1;
-    } else {
-        return n * fact(n - 1);
+    if (n > 20) n = 20;
+    uint64_t result = 1;
+    for (int i = 1; i <= n; ++i) {
+        result *= i;
     }
-}
-
-void *handle_client(void *arg) {
-    int client_socket = *((int *)arg);
-    uint64_t n;
-    read(client_socket, &n, sizeof(uint64_t));
-    if (n > 20) {
-        n = 20;
-    }
-    uint64_t result = fact(n);
-    write(client_socket, &result, sizeof(uint64_t));
-    close(client_socket);
-    pthread_exit(NULL);
+    return result;
 }
 
 int main() {
-    int server_socket, client_socket;
-    struct sockaddr_in server_addr, client_addr;
-    socklen_t client_len = sizeof(client_addr);
-    pthread_t threads[5];  // Maximum 5 concurrent threads
+    int server_fd, new_socket, max_sd, activity;
+    int client_sockets[MAX_CLIENTS];
+    fd_set readfds;
+    int max_clients = MAX_CLIENTS;
+
+    // Initialize client sockets
+    for (int i = 0; i < max_clients; ++i) {
+        client_sockets[i] = 0;
+    }
 
     // Create socket
-    server_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_socket == -1) {
-        perror("Error creating socket");
+    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
+        perror("Socket failed");
         exit(EXIT_FAILURE);
     }
 
-    // Initialize server address structure
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(12345);
-    server_addr.sin_addr.s_addr = INADDR_ANY;
+    // Prepare the sockaddr_in structure
+    struct sockaddr_in address;
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_ANY);
+    address.sin_port = htons(PORT);
 
-    // Bind socket
-    if (bind(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
-        perror("Error binding");
-        close(server_socket);
+    // Bind the socket
+    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
+        perror("Bind failed");
         exit(EXIT_FAILURE);
     }
 
     // Listen for incoming connections
-    if (listen(server_socket, 5) == -1) {
-        perror("Error listening");
-        close(server_socket);
+    if (listen(server_fd, 6000) < 0) {
+        perror("Listen failed");
         exit(EXIT_FAILURE);
     }
 
-    int i = 0;
     while (1) {
-        // Accept incoming connection
-        client_socket = accept(server_socket, (struct sockaddr *)&client_addr, &client_len);
-        if (client_socket == -1) {
-            perror("Error accepting connection");
-            close(server_socket);
-            exit(EXIT_FAILURE);
-        }
+        FD_ZERO(&readfds);
+        FD_SET(server_fd, &readfds);
+        max_sd = server_fd;
 
-        // Create a new thread to handle the client
-        if (pthread_create(&threads[i++], NULL, handle_client, (void *)&client_socket) != 0) {
-            perror("Error creating thread");
-            close(client_socket);
-        }
-
-        if (i >= 5) {
-            i = 0;  // Reset thread index
-            while (i < 5) {
-                pthread_join(threads[i++], NULL);  // Wait for threads to finish
+        // Add child sockets to set
+        for (int i = 0; i < max_clients; ++i) {
+            int sd = client_sockets[i];
+            if (sd > 0) {
+                FD_SET(sd, &readfds);
             }
-            i = 0;  // Reset thread index after joining threads
+            if (sd > max_sd) {
+                max_sd = sd;
+            }
+        }
+
+        // Wait for an activity on one of the sockets
+        activity = select(max_sd + 1, &readfds, NULL, NULL, NULL);
+
+        if (activity < 0) {
+            perror("Select error");
+        }
+
+        // If something happened on the server socket, it's an incoming connection
+        if (FD_ISSET(server_fd, &readfds)) {
+            if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&address)) < 0) {
+                perror("Accept failed");
+                exit(EXIT_FAILURE);
+            }
+
+            // Add new socket to the list of client sockets
+            for (int i = 0; i < max_clients; ++i) {
+                if (client_sockets[i] == 0) {
+                    client_sockets[i] = new_socket;
+                    break;
+                }
+            }
+        }
+
+        // Check client sockets for data to read
+        for (int i = 0; i < max_clients; ++i) {
+            int sd = client_sockets[i];
+            char buffer[1024];
+            if (FD_ISSET(sd, &readfds)) {
+                int n;
+                n = read(sd, buffer, sizeof(buffer)); 
+                if (n <= 0) {
+                    // Client disconnected, remove the socket
+                    close(sd);
+                    client_sockets[i] = 0;
+                } else {
+                    // Read payload and compute factorial
+                    buffer[n] = '\0';
+                    int num = atoi(buffer);
+                    uint64_t result = fact(num);
+
+                    // Send the factorial result back to the client
+                    char response[1024];
+                    snprintf(response, sizeof(response), "%ld\n", result);
+                    write(sd, response, strlen(response));
+                }
+            }
         }
     }
 
-    close(server_socket);
     return 0;
 }
