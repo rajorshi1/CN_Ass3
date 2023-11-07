@@ -1,78 +1,79 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdint.h>
 #include <unistd.h>
-#include <sys/socket.h>
-#include <errno.h>
-#include <stdbool.h>
-#include <netinet/in.h>
-#include <signal.h>
+#include <arpa/inet.h>
 
-#define CONTENT_SIZE 3000
-#define MAX 5000
-#define min(a,b) ((a)<(b)?(a):(b))
-
-uint64_t fact(uint64_t n){
-    uint64_t result=1;
-    int high=min(n,20);
-    for(int i=1;i<=high;i++){
-        result*=i;
+uint64_t fact(int n) {
+    if (n <= 1) {
+        return 1;
+    } else {
+        return n * fact(n - 1);
     }
-    return result;
 }
 
-int main(){
-    int requests;
-    printf("Enter the number of requests: ");
-    scanf("%d",&requests);
-    int sockfd;
-    int opt;
-    sockfd=socket(AF_INET,SOCK_STREAM,0);
-    if(sockfd<0){
-        perror("Socket creation failed");
+void handle_client(int client_socket) {
+    uint64_t n;
+    read(client_socket, &n, sizeof(uint64_t));
+    if (n > 20) {
+        n = 20;
     }
-    struct sockaddr_in server,client;
-    server.sin_family=AF_INET;
-    server.sin_port=htons(9000);
-    server.sin_addr.s_addr=INADDR_ANY;
-    int len=sizeof(struct sockaddr_in);
-    int setsock=setsockopt(sockfd,SOL_SOCKET,SO_REUSEADDR|SO_REUSEPORT,&opt,sizeof(opt));
-    if(setsock<0){
-        perror("Setsockopt failed");
+    uint64_t result = fact(n);
+    write(client_socket, &result, sizeof(uint64_t));
+    close(client_socket);
+}
+
+int main() {
+    int server_socket, client_socket;
+    struct sockaddr_in server_addr, client_addr;
+    socklen_t client_len = sizeof(client_addr);
+
+    // Create socket
+    server_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_socket == -1) {
+        perror("Error creating socket");
+        exit(EXIT_FAILURE);
     }
-    int bindsock=bind(sockfd,(struct sockaddr*)&server,len);
-    if(bindsock<0){
-        perror("Bind failed");
+
+    // Initialize server address structure
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(12345);
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+
+    // Bind socket
+    if (bind(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
+        perror("Error binding");
+        close(server_socket);
+        exit(EXIT_FAILURE);
     }
-    int listensock=listen(sockfd,MAX);
-    if(listensock<0){
-        perror("Listen failed");
+
+    // Listen for incoming connections
+    if (listen(server_socket, 5) == -1) {
+        perror("Error listening");
+        close(server_socket);
+        exit(EXIT_FAILURE);
     }
-    int newsockfd;
-    pid_t pid;
-    while(true){
-        newsockfd=accept(sockfd,(struct sockaddr*)&client,&len);
-        if(newsockfd<0){
-            perror("Accept failed");
+
+    while (1) {
+        // Accept incoming connection
+        client_socket = accept(server_socket, (struct sockaddr *)&client_addr, &client_len);
+        if (client_socket == -1) {
+            perror("Error accepting connection");
+            close(server_socket);
+            exit(EXIT_FAILURE);
         }
-        pid=fork();
-        if(pid<0){
-            perror("Fork failed");
-        }
-        if(pid==0){
-            for(int i=0;i<requests;i++){
-                char buffer[CONTENT_SIZE];
-                recv(newsockfd,&buffer,sizeof(buffer),0);
-                uint64_t n=strtoull(buffer,NULL,10);
-                uint64_t result=fact(n);
-                send(newsockfd,&result,sizeof(result),0);
-            }
-            close(newsockfd);
-            kill(getpid(),SIGKILL);
+
+        // Fork a new process to handle the client
+        if (fork() == 0) {
+            close(server_socket);  // Child process doesn't need the listening socket
+            handle_client(client_socket);
+            exit(EXIT_SUCCESS);  // Child process exits after handling client
+        } else {
+            close(client_socket);  // Parent process doesn't need the client socket
         }
     }
-    close(sockfd);
-    close(newsockfd);
+
+    close(server_socket);
     return 0;
 }
